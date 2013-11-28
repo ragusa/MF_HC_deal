@@ -127,7 +127,7 @@ class SS_HC
   private:
     void make_grid ();
     void setup_system();
-    void assemble_matrix (unsigned int option); // pass ref?
+  void assemble_matrix (unsigned int option, ConstraintMatrix &_constraints); // pass ref?
     void compute_residual ();
     std::pair<unsigned int, double> linear_solve (Vector<double>   &newton_update, double nonlin_norm); // pass name?
     void output_results () const;
@@ -136,6 +136,7 @@ class SS_HC
     FE_Q<dim>            fe;
     DoFHandler<dim>      dof_handler;
     ConstraintMatrix     constraints;
+    ConstraintMatrix     constraints_dummy;
 
     SparsityPattern      sparsity_pattern;
     SparseMatrix<double> system_matrix;
@@ -269,15 +270,17 @@ void SS_HC<dim>::setup_system ()
 
   constraints.clear ();
   DoFTools::make_hanging_node_constraints (dof_handler,constraints);
-  if (!matrix_free) {
+  //  if (!matrix_free) {
     std::vector<bool> mask (1, true);
     VectorTools::interpolate_boundary_values (dof_handler,
                                               0,  //jcr check this
                                               ZeroFunction<dim>(),
                                               constraints,
                                               mask);
-  } // end if
+  //  } // end if
   constraints.close(); 
+  constraints_dummy.clear ();
+  constraints_dummy.close(); 
 
   CompressedSparsityPattern c_sparsity(dof_handler.n_dofs());
   DoFTools::make_sparsity_pattern (dof_handler, c_sparsity, constraints, false);
@@ -373,9 +376,12 @@ void SS_HC<dim>::compute_residual ()
 // thus
 // int( gradbi . k graT -qbi) = 0 + bc
 {  
-  compute_nonlinear_residual<dim>(dof_handler, constraints, solution, nonlinear_residual);
   if (matrix_free) {
+    compute_nonlinear_residual<dim>(dof_handler, constraints_dummy, solution, nonlinear_residual);
     apply_dirichlet_on_residual<dim>(dof_handler, solution, nonlinear_residual);
+  }
+  else{
+  compute_nonlinear_residual<dim>(dof_handler, constraints, solution, nonlinear_residual);
   } // end if
 /*
   QGauss<dim>  quadrature_formula(2);
@@ -435,7 +441,7 @@ void SS_HC<dim>::compute_residual ()
 //------------------------------------------------------
 
 template <int dim>
-void SS_HC<dim>::assemble_matrix (unsigned int option) 
+void SS_HC<dim>::assemble_matrix (unsigned int option, ConstraintMatrix &_constraints) 
 {  
   // reinit the matrix
   system_matrix.reinit(sparsity_pattern);
@@ -497,7 +503,7 @@ void SS_HC<dim>::assemble_matrix (unsigned int option)
       }
       
       cell->get_dof_indices (local_dof_indices);
-      constraints.distribute_local_to_global (cell_matrix, local_dof_indices, system_matrix );     
+      _constraints.distribute_local_to_global (cell_matrix, local_dof_indices, system_matrix );     
   }
 
 }
@@ -518,7 +524,7 @@ std::pair<unsigned int, double> SS_HC<dim>::linear_solve (Vector<double> &newton
   if (!matrix_free) {
     gmres.solve (system_matrix, newton_update, minus_unperturbed_nonlinear_residual, prec);
   } else {
-    ActionOfJacobianOnVector<dim> jacobian_apply(dof_handler, constraints, solution, minus_unperturbed_nonlinear_residual, nonlinear_residual);
+    ActionOfJacobianOnVector<dim> jacobian_apply(dof_handler, constraints_dummy, solution, minus_unperturbed_nonlinear_residual, nonlinear_residual);
     gmres.solve (jacobian_apply, newton_update, minus_unperturbed_nonlinear_residual, prec);
  } // end if
   
@@ -586,7 +592,7 @@ void SS_HC<dim>::run ()
     std::cout <<  "Newton iteration # " << nonlin_iter << "\t:";
 
     // assemble jacobian
-    assemble_matrix (0);
+    assemble_matrix (0,constraints);
     // zero out the update vector
     newton_update = 0.0;
     // make this the rhs of the linear system J delta = -f
