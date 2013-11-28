@@ -129,7 +129,7 @@ class SS_HC
     void setup_system();
     void assemble_matrix (unsigned int option); // pass ref?
     void compute_residual ();
-    std::pair<unsigned int, double> linear_solve (Vector<double>   &newton_update); // pass name?
+    std::pair<unsigned int, double> linear_solve (Vector<double>   &newton_update, double nonlin_norm); // pass name?
     void output_results () const;
     
     Triangulation<dim>   triangulation;
@@ -225,7 +225,7 @@ void compute_thermal_conductivity(const std::vector<double> &T,
   const unsigned int n_points = T.size();
   Assert (values.size()      == n_points, ExcDimensionMismatch (values.size(), n_points) );
   const double k0=1.0;
-  const double k1=0.0;
+  const double k1=1.0;
     
   for (unsigned int point = 0; point < n_points; ++point){
      values[point]      = k0 + k1*T[point];
@@ -246,7 +246,7 @@ void SS_HC<dim>::make_grid ()
   GridGenerator::hyper_rectangle(triangulation,bottom_left,upper_right); 
 */
   GridGenerator::hyper_cube (triangulation, -1, 1);
-  triangulation.refine_global (4);
+  triangulation.refine_global (6);
   
   std::cout << "   Number of active cells: "
             << triangulation.n_active_cells()
@@ -505,12 +505,15 @@ void SS_HC<dim>::assemble_matrix (unsigned int option)
 //------------------------------------------------------
 
 template <int dim>
-std::pair<unsigned int, double> SS_HC<dim>::linear_solve (Vector<double> &newton_update)
+std::pair<unsigned int, double> SS_HC<dim>::linear_solve (Vector<double> &newton_update, double nonlin_norm)
 {
-  SolverControl solver_control (1000, 1.0e-10);
+  double lin_tol = std::max(nonlin_norm * 1.0e-10, 1.0e-10);
+  SolverControl solver_control (1000, lin_tol);
   SolverGMRES<Vector<double> > gmres (solver_control);
-  PreconditionIdentity prec;
-  prec.initialize(system_matrix);
+  //  PreconditionIdentity prec;
+  //  prec.initialize(system_matrix);
+  PreconditionSSOR<> prec;
+  prec.initialize(system_matrix, 1.2);
 
   if (!matrix_free) {
     gmres.solve (system_matrix, newton_update, minus_unperturbed_nonlinear_residual, prec);
@@ -572,10 +575,10 @@ void SS_HC<dim>::run ()
   int nonlin_iter = 0;
   bool  newton_convergence = false;
   const double damping = 1.0;
-  double residual_norm = -99.0;
   // compute initial residual
   compute_residual();
   const double initial_residual_norm = nonlinear_residual.l2_norm();
+  double residual_norm = initial_residual_norm;
   std::printf("Initial residual norm = %-16.3e \n",initial_residual_norm);
   std::cout << " residual norm   number_of_linear  linear_conver  newton_up_l2" <<std::endl;
 
@@ -589,7 +592,7 @@ void SS_HC<dim>::run ()
     // make this the rhs of the linear system J delta = -f
     minus_unperturbed_nonlinear_residual.equ(-1.0, nonlinear_residual);
     // solve the linear system J delta = -f 
-    std::pair<unsigned int, double> convergence = linear_solve (newton_update);
+    std::pair<unsigned int, double> convergence = linear_solve (newton_update,residual_norm);
     // update Newton solution
     solution.add(damping, newton_update);
   
@@ -605,7 +608,8 @@ void SS_HC<dim>::run ()
     ++nonlin_iter;
   } // Newton's loop
 
-  solution.print(std::cout, 15);
+  if(solution.size()<500)
+    solution.print(std::cout, 15);
         
   // output vtk file 
   output_results ();
