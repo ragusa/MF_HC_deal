@@ -28,8 +28,6 @@
 #include <deal.II/lac/precondition.h>
 
 #include <deal.II/numerics/data_out.h>
-//### include <deal.II/numerics/vectors.h>
-//### include <deal.II/numerics/matrices.h>
 #include <deal.II/numerics/matrix_tools.h>
 #include <deal.II/numerics/vector_tools.h>
 
@@ -39,10 +37,15 @@
 
 using namespace dealii;
 
+//------------------------------------------------------
 void compute_thermal_conductivity(const std::vector<double> &T,
                                   std::vector<double> &values,
                                   std::vector<double> &derivatives);
-
+//------------------------------------------------------
+template <int dim>
+void apply_dirichlet_on_residual(DoFHandler<dim> const &  dof_handler, 
+                                 Vector<double> const &   solution,
+                                 Vector<double> &         nonlinear_residual);
 //------------------------------------------------------
 template <int dim>
 void compute_nonlinear_residual(DoFHandler<dim> const &  dof_handler, 
@@ -82,6 +85,7 @@ private:
   Vector<double> &         _perturbed_residual;
 };
 
+//------------------------------------------------------
 template <int dim>
 void ActionOfJacobianOnVector<dim>::vmult(Vector<double> &u, const Vector<double> &v) const {
   // compute epsilon
@@ -92,31 +96,17 @@ void ActionOfJacobianOnVector<dim>::vmult(Vector<double> &u, const Vector<double
   for (size_t i = 0; i < n; ++i) {
     epsilon += b * (1.0 + numbers::NumberTraits<double>::abs(_solution[i]));
   } // end for i
-  epsilon /= (static_cast<double>(n) * v_l2_norm);
-  epsilon=1234.0;
-  std::cout << "here " << std::endl;
-  std::cout << "b=" << b << "  n=" << n << "  v_l2_norm=" << v_l2_norm << "  epsilon=" << epsilon << std::endl ;
+  epsilon /= (static_cast<double>(n) * (v_l2_norm > 1.0e-12 ? v_l2_norm : 1.0));
+//  epsilon = 1.0e3;
+//  std::cout<<"b="<<b<<"  n="<<n<<"  v_l2_norm="<<v_l2_norm<<"  epsilon="<<epsilon<<std::endl;
 
   // perturb u
   u = _solution;
   u.add(epsilon, v);
-  
-  std::cout << "x=" ;
-  _solution.print(std::cout, 15);
-  std::cout << std::endl;
-  std::cout << "x+epsilon.v=";
-  u.print(std::cout, 15);
-  std::cout << std::endl;
 
   // compute perturbed residual
   compute_nonlinear_residual<dim>(_dof_handler, _constraints, u, _perturbed_residual);
-
-  std::cout << "F(x+epsilon v)=";
-  _perturbed_residual.print(std::cout, 15);
-  std::cout << std::endl;
-  std::cout << "-F(x)=";
-  _minus_unperturbed_residual.print(std::cout, 15);
-  std::cout << std::endl;
+  apply_dirichlet_on_residual<dim>(_dof_handler, u, _perturbed_residual);
 
   // compute FD
   u = _perturbed_residual;
@@ -155,6 +145,7 @@ class SS_HC
     Vector<double>       nonlinear_residual;
     Vector<double>       minus_unperturbed_nonlinear_residual;
 
+    bool matrix_free;
 };
 
 
@@ -195,9 +186,7 @@ double VolumetricTerm<dim>::value (const Point<dim> &p,
 				 // side function to function $4(x^4+y^4)$ in
 				 // 2D, or $4(x^4+y^4+z^4)$ in 3D.
   // return return_value;
-
   return_value = 10.0;
-//  std::cout << "q = " << return_value << std::endl ;
   return return_value;
 }
 
@@ -223,7 +212,8 @@ template <int dim>
 SS_HC<dim>::SS_HC ()
     :
     fe (1),
-    dof_handler (triangulation)
+    dof_handler (triangulation),
+    matrix_free(true)
 {}
 
 //------------------------------------------------------
@@ -256,7 +246,7 @@ void SS_HC<dim>::make_grid ()
   GridGenerator::hyper_rectangle(triangulation,bottom_left,upper_right); 
 */
   GridGenerator::hyper_cube (triangulation, -1, 1);
-  triangulation.refine_global (2);
+  triangulation.refine_global (4);
   
   std::cout << "   Number of active cells: "
             << triangulation.n_active_cells()
@@ -279,13 +269,14 @@ void SS_HC<dim>::setup_system ()
 
   constraints.clear ();
   DoFTools::make_hanging_node_constraints (dof_handler,constraints);
-  std::map<unsigned int,double> boundary_values;
-  std::vector<bool> mask (1, true);
-  VectorTools::interpolate_boundary_values (dof_handler,
-                                            0,  //jcr check this
-                                            ZeroFunction<dim>(),
-                                            constraints,
-                                            mask);
+  if (!matrix_free) {
+    std::vector<bool> mask (1, true);
+    VectorTools::interpolate_boundary_values (dof_handler,
+                                              0,  //jcr check this
+                                              ZeroFunction<dim>(),
+                                              constraints,
+                                              mask);
+  } // end if
   constraints.close(); 
 
   CompressedSparsityPattern c_sparsity(dof_handler.n_dofs());
@@ -303,15 +294,29 @@ void SS_HC<dim>::setup_system ()
 //------------------------------------------------------
 
 template <int dim>
+void apply_dirichlet_on_residual(DoFHandler<dim> const &  dof_handler, 
+                                 Vector<double> const &   solution,
+                                 Vector<double> &         nonlinear_residual) {
+
+  std::map<unsigned int,double> boundary_values;
+  VectorTools::interpolate_boundary_values (dof_handler,
+                                            0,
+                                            BoundaryValues<dim>(),
+                                            boundary_values);
+  for (std::map<unsigned int, double>::const_iterator it = boundary_values.begin(); 
+       it != boundary_values.end(); ++it) {
+    nonlinear_residual(it->first) = solution(it->first) - (it->second);
+  } // end for
+}
+
+//------------------------------------------------------
+
+template <int dim>
 void compute_nonlinear_residual(DoFHandler<dim> const &  dof_handler, 
                                 ConstraintMatrix const & constraints,
                                 Vector<double> const &   solution,
                                 Vector<double> &         nonlinear_residual) {
   QGauss<dim>  quadrature_formula(2);
-
-  std::cout << "in compute_nonlinear_residual, solution passed =\n     " ;
-  solution.print(std::cout, 15);
-  std::cout << std::endl;
 
   // reset to 0
   nonlinear_residual = 0.0;
@@ -343,12 +348,6 @@ void compute_nonlinear_residual(DoFHandler<dim> const &  dof_handler,
     fe_values.get_function_values   (solution,local_solution_values   );
     fe_values.get_function_gradients(solution,local_solution_gradients);
     compute_thermal_conductivity(local_solution_values,conductivity_values,conductivity_derivatives);
-    std::cout << "local solution[q] = ";
-    for (unsigned int q_point=0; q_point<n_q_points; ++q_point){
-      std::cout << local_solution_values[q_point] << " ";
-      std::cout << local_solution_gradients[q_point] << " ";
-    }
-    std::cout << std::endl;
 
     for (unsigned int q_point=0; q_point<n_q_points; ++q_point)
       for (unsigned int i=0; i<dofs_per_cell; ++i)
@@ -362,16 +361,11 @@ void compute_nonlinear_residual(DoFHandler<dim> const &  dof_handler,
                           *fe_values.JxW (q_point);
       
     cell->get_dof_indices(local_dof_indices);
-    std::cout << "local_f = ";
-    for (unsigned int i=0; i<dofs_per_cell; ++i)
-      std::cout << local_f(i) << " ";
-    std::cout << std::endl;
     constraints.distribute_local_to_global(local_f, local_dof_indices, nonlinear_residual);
   } // end for
-  std::cout << "in compute_nonlinear_residual, F=\n    ";
-  nonlinear_residual.print(std::cout, 15);
-  std::cout << std::endl;
 }
+
+//------------------------------------------------------
 
 template <int dim>
 void SS_HC<dim>::compute_residual ()
@@ -380,6 +374,9 @@ void SS_HC<dim>::compute_residual ()
 // int( gradbi . k graT -qbi) = 0 + bc
 {  
   compute_nonlinear_residual<dim>(dof_handler, constraints, solution, nonlinear_residual);
+  if (matrix_free) {
+    apply_dirichlet_on_residual<dim>(dof_handler, solution, nonlinear_residual);
+  } // end if
 /*
   QGauss<dim>  quadrature_formula(2);
 
@@ -515,12 +512,9 @@ std::pair<unsigned int, double> SS_HC<dim>::linear_solve (Vector<double> &newton
   PreconditionIdentity prec;
   prec.initialize(system_matrix);
 
-  bool matrix_free = true;
   if (!matrix_free) {
-    gmres.solve (system_matrix, newton_update, nonlinear_residual, prec);
+    gmres.solve (system_matrix, newton_update, minus_unperturbed_nonlinear_residual, prec);
   } else {
-    compute_nonlinear_residual<dim>(dof_handler, constraints, solution, minus_unperturbed_nonlinear_residual);
-    minus_unperturbed_nonlinear_residual *= -1.0;
     ActionOfJacobianOnVector<dim> jacobian_apply(dof_handler, constraints, solution, minus_unperturbed_nonlinear_residual, nonlinear_residual);
     gmres.solve (jacobian_apply, newton_update, minus_unperturbed_nonlinear_residual, prec);
  } // end if
@@ -557,7 +551,7 @@ void SS_HC<dim>::run ()
   std::cout << "Solving problem in " << dim << " space dimensions." << std::endl;
   
   make_grid();
-  setup_system ();
+  setup_system();
 
   // pick initial guess
   const double initial_flat_value = 33.0;
@@ -578,40 +572,12 @@ void SS_HC<dim>::run ()
   int nonlin_iter = 0;
   bool  newton_convergence = false;
   const double damping = 1.0;
-  double residual_norm;
+  double residual_norm = -99.0;
   // compute initial residual
   compute_residual();
   const double initial_residual_norm = nonlinear_residual.l2_norm();
-
-  compute_nonlinear_residual<dim>(dof_handler, constraints, solution, minus_unperturbed_nonlinear_residual);
-  // difference of residuals, check
-  nonlinear_residual -= minus_unperturbed_nonlinear_residual;
-  std::cout << "difference of residual " << nonlinear_residual.l2_norm() << std::endl;
-
-  minus_unperturbed_nonlinear_residual *= -1.0;
-  ActionOfJacobianOnVector<dim> jacobian_apply(dof_handler, constraints, solution, minus_unperturbed_nonlinear_residual, nonlinear_residual);
-  Vector<double> v, v1, v2;
-  v.reinit(dof_handler.n_dofs());
-  v1.reinit(dof_handler.n_dofs());
-  v2.reinit(dof_handler.n_dofs());
-  v=0.0;
-  v(3)=1.0;
-  jacobian_apply.vmult(v1,v);
-  std::cout << "(F(X+eps.v)-F(x))/eps =" ;
-  v1.print(std::cout, 15);
-  std::cout << std::endl;
-
-  assemble_matrix (0);
-  system_matrix.print_formatted(std::cout, 5, true, 0, "0", 1);
-  system_matrix.vmult(v2,v);
-  std::cout << "Av=" ;
-  v2.print(std::cout, 15);
-  std::cout << std::endl;
-
-  v.equ(1.0,v1,-1.0,v2);
-  std::cout << "norm of the vmult results v1-v2  v1  v2  " << v.l2_norm() << "  "<< v1.l2_norm()<<"  "<<v2.l2_norm()<< std::endl;
-
-  Assert(false, ExcNotImplemented());
+  std::printf("Initial residual norm = %-16.3e \n",initial_residual_norm);
+  std::cout << " residual norm   number_of_linear  linear_conver  newton_up_l2" <<std::endl;
 
   while ( nonlin_iter < 100 && ! newton_convergence ) {
     std::cout <<  "Newton iteration # " << nonlin_iter << "\t:";
@@ -620,10 +586,8 @@ void SS_HC<dim>::run ()
     assemble_matrix (0);
     // zero out the update vector
     newton_update = 0.0;
-    // save the unperturbed nonlinear reisudal to pass to MF GMRes
-    minus_unperturbed_nonlinear_residual = nonlinear_residual;
     // make this the rhs of the linear system J delta = -f
-    nonlinear_residual *= -1.0; // if matrix-free, we do not want this anymore
+    minus_unperturbed_nonlinear_residual.equ(-1.0, nonlinear_residual);
     // solve the linear system J delta = -f 
     std::pair<unsigned int, double> convergence = linear_solve (newton_update);
     // update Newton solution
@@ -640,7 +604,8 @@ void SS_HC<dim>::run ()
     // increment iteration counter
     ++nonlin_iter;
   } // Newton's loop
-      
+
+  solution.print(std::cout, 15);
         
   // output vtk file 
   output_results ();
@@ -652,8 +617,7 @@ void SS_HC<dim>::run ()
 int main () 
 {
   deallog.depth_console (0);
-  const int my_dim = 1;
-  SS_HC<my_dim> laplace_problem;
+  SS_HC<2> laplace_problem;
   laplace_problem.run ();
   
   return 0;
