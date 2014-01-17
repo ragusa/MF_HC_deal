@@ -53,14 +53,45 @@ void compute_nonlinear_residual(DoFHandler<dim> const &  dof_handler,
                                 Vector<double> const &   solution,
                                 Vector<double> &         nonlinear_residual);
 //------------------------------------------------------
+template <class Matrix, class Preconditioner>
+class InverseMatrix : public Subscriptor
+{
+public:
+  InverseMatrix (const Matrix         &m,
+                 const Preconditioner &preconditioner);
+
+  void vmult (Vector<double>       &dst,
+              const Vector<double> &src) const;
+
+private:
+  const SmartPointer<const Matrix>         matrix;
+  const SmartPointer<const Preconditioner> preconditioner;
+};
+template <class Matrix, class Preconditioner>
+InverseMatrix<Matrix,Preconditioner>::InverseMatrix (const Matrix         &m,
+                                                     const Preconditioner &preconditioner)
+  :
+  matrix (&m),
+  preconditioner (&preconditioner)
+{}
+template <class Matrix, class Preconditioner>
+void InverseMatrix<Matrix,Preconditioner>::vmult (Vector<double>       &dst,
+                                                  const Vector<double> &src) const
+{
+  SolverControl solver_control (src.size(), 1e-6*src.l2_norm());
+  SolverCG<>    cg (solver_control);
+  dst = 0;
+  cg.solve (*matrix, dst, src, *preconditioner);
+}
+//------------------------------------------------------
 template <int dim>
 class ActionOfJacobianOnVector {
 public:
-  ActionOfJacobianOnVector(DoFHandler<dim> const &  dof_handler,
+  ActionOfJacobianOnVector(DoFHandler<dim> const  & dof_handler,
                            ConstraintMatrix const & constraints,
-                           Vector<double> const &   solution, 
-                           Vector<double> const &   minus_unperturbed_residual,
-                           Vector<double> &         perturbed_residual)
+                           Vector<double> const   & solution, 
+                           Vector<double> const   & minus_unperturbed_residual,
+                           Vector<double>         & perturbed_residual)
   : _dof_handler(dof_handler),
     _constraints(constraints),
     _solution(solution),
@@ -78,11 +109,11 @@ public:
     Assert(false, ExcNotImplemented());
   }
 private:
-  DoFHandler<dim> const &  _dof_handler;
+  DoFHandler<dim> const  & _dof_handler;
   ConstraintMatrix const & _constraints;
-  Vector<double> const &   _solution;
-  Vector<double> const &   _minus_unperturbed_residual;
-  Vector<double> &         _perturbed_residual;
+  Vector<double> const   & _solution;
+  Vector<double> const   & _minus_unperturbed_residual;
+  Vector<double>         & _perturbed_residual;
 };
 
 //------------------------------------------------------
@@ -120,46 +151,46 @@ void ActionOfJacobianOnVector<dim>::vmult(Vector<double> &u, const Vector<double
 template <int dim>
 class SS_HC 
 {
-  public:
-    SS_HC ();
-    void run ();
+public:
+  SS_HC ();
+  void run ();
     
-  private:
-    void make_grid ();
-    void setup_system();
+private:
+  void make_grid ();
+  void setup_system();
   void assemble_matrix (unsigned int option, ConstraintMatrix &_constraints); // pass ref?
-    void compute_residual ();
-    std::pair<unsigned int, double> linear_solve (Vector<double>   &newton_update, double nonlin_norm); // pass name?
-    void output_results () const;
-    
-    Triangulation<dim>   triangulation;
-    FE_Q<dim>            fe;
-    DoFHandler<dim>      dof_handler;
-    ConstraintMatrix     constraints;
-    ConstraintMatrix     constraints_dummy;
-
-    SparsityPattern      sparsity_pattern;
-    SparseMatrix<double> system_matrix;
-
-    Vector<double>       solution;
-    Vector<double>       newton_update;
-    Vector<double>       nonlinear_residual;
-    Vector<double>       minus_unperturbed_nonlinear_residual;
-
-    bool matrix_free;
+  void compute_residual ();
+  std::pair<unsigned int, double> linear_solve (Vector<double>   &newton_update, double nonlin_norm); // pass name?
+  void output_results () const;
+  
+  Triangulation<dim>   triangulation;
+  FE_Q<dim>            fe;
+  DoFHandler<dim>      dof_handler;
+  ConstraintMatrix     constraints;
+  ConstraintMatrix     constraints_dummy;
+  
+  SparsityPattern      sparsity_pattern;
+  SparseMatrix<double> system_matrix;
+  SparseMatrix<double> system_symmetric;
+  
+  Vector<double>       solution;
+  Vector<double>       newton_update;
+  Vector<double>       nonlinear_residual;
+  Vector<double>       minus_unperturbed_nonlinear_residual;
+  
+  bool matrix_free;
 };
-
 
 //------------------------------------------------------
 
 template <int dim>
 class VolumetricTerm : public Function<dim> 
 {
-  public:
-    VolumetricTerm () : Function<dim>() {}
-    
-    virtual double value (const Point<dim>   &p,
-        const unsigned int  component = 0) const;
+public:
+  VolumetricTerm () : Function<dim>() {}
+  
+  virtual double value (const Point<dim>   & p,
+                        const unsigned int   component = 0) const;
 };
 
 //------------------------------------------------------
@@ -167,18 +198,18 @@ class VolumetricTerm : public Function<dim>
 template <int dim>
 class BoundaryValues : public Function<dim> 
 {
-  public:
-    BoundaryValues () : Function<dim>() {}
-    
-    virtual double value (const Point<dim>   &p,
-        const unsigned int  component = 0) const;
+public:
+  BoundaryValues () : Function<dim>() {}
+  
+  virtual double value (const Point<dim>   & p,
+                        const unsigned int   component = 0) const;
 };
 
 //------------------------------------------------------
 
 template <int dim>
-double VolumetricTerm<dim>::value (const Point<dim> &p,
-          const unsigned int /*component*/) const 
+double VolumetricTerm<dim>::value (const Point<dim>   & p,
+                                   const unsigned int /*component*/) const 
 {
   double return_value = 0;
   for (unsigned int i=0; i<dim; ++i)
@@ -219,9 +250,9 @@ SS_HC<dim>::SS_HC ()
 
 //------------------------------------------------------
 
-void compute_thermal_conductivity(const std::vector<double> &T,
-                                  std::vector<double> &values,
-                                  std::vector<double> &derivatives)
+void compute_thermal_conductivity(const std::vector<double> & T,
+                                  std::vector<double>       & values,
+                                  std::vector<double>       & derivatives)
 {
   const unsigned int n_points = T.size();
   Assert (values.size()      == n_points, ExcDimensionMismatch (values.size(), n_points) );
@@ -287,6 +318,7 @@ void SS_HC<dim>::setup_system ()
   sparsity_pattern.copy_from(c_sparsity);
   
   system_matrix.reinit (sparsity_pattern);
+  system_symmetric.reinit (sparsity_pattern);
   
   solution.reinit (dof_handler.n_dofs());
   newton_update.reinit (dof_handler.n_dofs());
@@ -315,10 +347,10 @@ void apply_dirichlet_on_residual(DoFHandler<dim> const &  dof_handler,
 //------------------------------------------------------
 
 template <int dim>
-void compute_nonlinear_residual(DoFHandler<dim> const &  dof_handler, 
+void compute_nonlinear_residual(DoFHandler<dim> const  & dof_handler, 
                                 ConstraintMatrix const & constraints,
-                                Vector<double> const &   solution,
-                                Vector<double> &         nonlinear_residual) {
+                                Vector<double> const   & solution,
+                                Vector<double>         & nonlinear_residual) {
   QGauss<dim>  quadrature_formula(2);
 
   // reset to 0
@@ -381,7 +413,7 @@ void SS_HC<dim>::compute_residual ()
     apply_dirichlet_on_residual<dim>(dof_handler, solution, nonlinear_residual);
   }
   else{
-  compute_nonlinear_residual<dim>(dof_handler, constraints, solution, nonlinear_residual);
+    compute_nonlinear_residual<dim>(dof_handler, constraints, solution, nonlinear_residual);
   } // end if
 /*
   QGauss<dim>  quadrature_formula(2);
@@ -445,6 +477,7 @@ void SS_HC<dim>::assemble_matrix (unsigned int option, ConstraintMatrix &_constr
 {  
   // reinit the matrix
   system_matrix.reinit(sparsity_pattern);
+  system_symmetric.reinit(sparsity_pattern);
   
   QGauss<dim>  quadrature_formula(2);
 
@@ -458,6 +491,7 @@ void SS_HC<dim>::assemble_matrix (unsigned int option, ConstraintMatrix &_constr
   const unsigned int   n_q_points    = quadrature_formula.size();
 
   FullMatrix<double>   cell_matrix (dofs_per_cell, dofs_per_cell);
+  FullMatrix<double>   cell_symmetric (dofs_per_cell, dofs_per_cell);
   Vector<double>       cell_rhs (dofs_per_cell);
 
 
@@ -477,6 +511,7 @@ void SS_HC<dim>::assemble_matrix (unsigned int option, ConstraintMatrix &_constr
     {
     fe_values.reinit (cell);
     cell_matrix = 0;
+    cell_symmetric = 0;
     fe_values.get_function_values   (solution,local_solution_values   );
     fe_values.get_function_gradients(solution,local_solution_gradients);
     compute_thermal_conductivity(local_solution_values,conductivity_values,conductivity_derivatives);
@@ -492,6 +527,12 @@ void SS_HC<dim>::assemble_matrix (unsigned int option, ConstraintMatrix &_constr
                                fe_values.JxW (q_point)
                               );
 
+          cell_symmetric(i,j) += (fe_values.shape_grad (i, q_point) *
+                                         conductivity_values[q_point]      *
+                                         fe_values.shape_grad (j, q_point) *
+                                         fe_values.JxW (q_point)
+                                         );
+
            if(option==1) // exact jacobian
              cell_matrix(i,j) += (fe_values.shape_grad (i, q_point) *
                                   conductivity_derivatives[q_point] *
@@ -503,7 +544,8 @@ void SS_HC<dim>::assemble_matrix (unsigned int option, ConstraintMatrix &_constr
       }
       
       cell->get_dof_indices (local_dof_indices);
-      _constraints.distribute_local_to_global (cell_matrix, local_dof_indices, system_matrix );     
+      _constraints.distribute_local_to_global (cell_matrix, local_dof_indices, system_matrix );
+      _constraints.distribute_local_to_global (cell_symmetric, local_dof_indices, system_symmetric );
   }
 
 }
@@ -516,10 +558,14 @@ std::pair<unsigned int, double> SS_HC<dim>::linear_solve (Vector<double> &newton
   double lin_tol = std::max(nonlin_norm * 1.0e-10, 1.0e-10);
   SolverControl solver_control (1000, lin_tol);
   SolverGMRES<Vector<double> > gmres (solver_control);
-  //  PreconditionIdentity prec;
-  //  prec.initialize(system_matrix);
-  PreconditionSSOR<> prec;
-  prec.initialize(system_matrix, 1.2);
+  
+  //Nested preconditioner
+  //use the inexact Jacobian as a preconditioner for true Jacobian
+  //precondition the inexact Jacobian with SSOR and solve with CG (see inverse matrix vmult function)
+  PreconditionSSOR<> prec_symmetric;
+  prec_symmetric.initialize(system_symmetric, 1.2);
+  //this is what will be passed as the preconditioner to the gmres solve
+  const InverseMatrix<SparseMatrix<double>, PreconditionSSOR<> > prec(system_symmetric, prec_symmetric);
 
   if (!matrix_free) {
     gmres.solve (system_matrix, newton_update, minus_unperturbed_nonlinear_residual, prec);
@@ -592,7 +638,7 @@ void SS_HC<dim>::run ()
     std::cout <<  "Newton iteration # " << nonlin_iter << "\t:";
 
     // assemble jacobian
-    assemble_matrix (0,constraints);
+    assemble_matrix (1,constraints);
     // zero out the update vector
     newton_update = 0.0;
     // make this the rhs of the linear system J delta = -f
@@ -632,4 +678,3 @@ int main ()
   
   return 0;
 }
-
